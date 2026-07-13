@@ -1,0 +1,38 @@
+# Automação de Sprint Semanal - Jira Cloud
+# Roda toda segunda-feira às 08:00 (horário de Brasília / UTC-3)
+# Também pode ser executado manualmente via "Run workflow"
+
+name: Sprint Semanal - RAJ
+
+on:
+  schedule:
+    # Cron em UTC: 11:00 UTC = 08:00 BRT (Brasília)
+    - cron: '0 11 * * 1'
+
+  # Permite execução manual para testes
+  workflow_dispatch:
+
+jobs:
+  criar-sprint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências
+        run: pip install requests
+
+      - name: Executar automação de sprint
+        env:
+          JIRA_DOMAIN: ${{ secrets.JIRA_DOMAIN }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          BOARD_ID: ${{ secrets.BOARD_ID }}
+          DURACAO_SPRINT_DIAS: "7"
+        run: python sprint_automation.py
