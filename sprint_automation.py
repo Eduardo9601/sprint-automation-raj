@@ -1,11 +1,9 @@
 """
-Automação de Sprint Semanal - Jira Cloud
-Projeto: RAJ | Board: configurável via env
-
-Fluxo:
-1. Busca sprint ativa no board
-2. Se vencida: cria nova, move issues pendentes, fecha antiga, ativa nova
-3. Se nenhuma ativa: cria e ativa nova sprint do zero
+Sprint Automation - Grazziotin SA
+Board: RAJ (ID: 89)
+Executa semanalmente via GitHub Actions
+Cria nova sprint, move issues pendentes e fecha a anterior.
+REGRA: Apenas UMA sprint criada por execução.
 """
 
 import os
@@ -13,266 +11,253 @@ import sys
 import requests
 from datetime import datetime, timedelta, timezone
 
-# ============ CONFIGURAÇÃO ============
-
-JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "").strip()
-JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "").strip()
-JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "").strip()
-BOARD_ID = os.environ.get("BOARD_ID", "").strip()
-DURACAO_DIAS = int(os.environ.get("DURACAO_SPRINT_DIAS", "7"))
-
-# Validação
-if not all([JIRA_DOMAIN, JIRA_EMAIL, JIRA_API_TOKEN, BOARD_ID]):
-    print("❌ ERRO: Variáveis de ambiente obrigatórias não configuradas!")
-    print(f"   JIRA_DOMAIN: {'✅' if JIRA_DOMAIN else '❌ FALTANDO'}")
-    print(f"   JIRA_EMAIL: {'✅' if JIRA_EMAIL else '❌ FALTANDO'}")
-    print(f"   JIRA_API_TOKEN: {'✅' if JIRA_API_TOKEN else '❌ FALTANDO'}")
-    print(f"   BOARD_ID: {'✅' if BOARD_ID else '❌ FALTANDO'}")
-    sys.exit(1)
+# ========== CONFIGURAÇÃO ==========
+JIRA_DOMAIN = os.environ.get("JIRA_DOMAIN", "")
+JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
+JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
+BOARD_ID = os.environ.get("BOARD_ID", "89")
 
 BASE_URL = f"https://{JIRA_DOMAIN}/rest/agile/1.0"
 AUTH = (JIRA_EMAIL, JIRA_API_TOKEN)
 HEADERS = {"Content-Type": "application/json", "Accept": "application/json"}
 
-# Timezone São Paulo (UTC-3)
-SP_TZ = timezone(timedelta(hours=-3))
-AGORA = datetime.now(SP_TZ)
-HOJE = AGORA.date()
+DURACAO_SPRINT_DIAS = 7
+FUSO_HORARIO = timezone(timedelta(hours=-3))  # America/Sao_Paulo
 
-# ============ FUNÇÕES ============
 
-def api_get(endpoint):
-    """GET request à API do Jira."""
-    url = f"{BASE_URL}{endpoint}"
-    resp = requests.get(url, auth=AUTH, headers=HEADERS)
-    return resp
+def log(msg):
+    print(msg)
 
-def api_post(endpoint, data):
-    """POST request à API do Jira."""
-    url = f"{BASE_URL}{endpoint}"
-    resp = requests.post(url, auth=AUTH, headers=HEADERS, json=data)
-    return resp
 
-def api_put(endpoint, data):
-    """PUT request à API do Jira."""
-    url = f"{BASE_URL}{endpoint}"
-    resp = requests.put(url, auth=AUTH, headers=HEADERS, json=data)
-    return resp
+def validar_config():
+    """Valida se todas as variáveis de ambiente estão configuradas."""
+    erros = []
+    if not JIRA_DOMAIN:
+        erros.append("JIRA_DOMAIN")
+    if not JIRA_EMAIL:
+        erros.append("JIRA_EMAIL")
+    if not JIRA_API_TOKEN:
+        erros.append("JIRA_API_TOKEN")
+    if not BOARD_ID:
+        erros.append("BOARD_ID")
 
-def buscar_sprints(board_id, state):
+    if erros:
+        log(f"❌ Variáveis de ambiente faltando: {', '.join(erros)}")
+        sys.exit(1)
+
+    log(f"✅ Configuração OK — Board: {BOARD_ID} | Domain: {JIRA_DOMAIN}")
+
+
+def get_sprints(state):
     """Busca sprints do board por estado."""
-    resp = api_get(f"/board/{board_id}/sprint?state={state}&maxResults=50")
+    url = f"{BASE_URL}/board/{BOARD_ID}/sprint"
+    params = {"state": state, "maxResults": 50}
+    resp = requests.get(url, auth=AUTH, headers=HEADERS, params=params)
+
     if resp.status_code == 200:
         return resp.json().get("values", [])
-    return []
+    else:
+        log(f"⚠️ Erro ao buscar sprints ({state}): {resp.status_code}")
+        return []
 
-def buscar_maior_numero_sprint():
-    """Encontra o maior número sequencial entre todas as sprints."""
+
+def get_issues_pendentes(sprint_id):
+    """Busca issues não concluídas de uma sprint."""
+    url = f"{BASE_URL}/sprint/{sprint_id}/issue"
+    params = {"maxResults": 200, "fields": "status"}
+    resp = requests.get(url, auth=AUTH, headers=HEADERS, params=params)
+
+    if resp.status_code != 200:
+        log(f"⚠️ Erro ao buscar issues da sprint {sprint_id}: {resp.status_code}")
+        return []
+
+    issues = resp.json().get("issues", [])
+    pendentes = []
+    for issue in issues:
+        categoria = issue["fields"]["status"]["statusCategory"]["key"]
+        if categoria != "done":
+            pendentes.append(issue["key"])
+
+    return pendentes
+
+
+def extrair_maior_numero(sprints):
+    """Extrai o maior número sequencial das sprints."""
+    import re
     maior = 0
-    for state in ["active", "future", "closed"]:
-        sprints = buscar_sprints(BOARD_ID, state)
-        for s in sprints:
-            nome = s.get("name", "")
-            # Extrai número do padrão "Sprint XX - ..."
-            import re
-            match = re.search(r"Sprint\s+(\d+)", nome)
-            if match:
-                num = int(match.group(1))
-                if num > maior:
-                    maior = num
+    for sprint in sprints:
+        match = re.search(r"Sprint\s+(\d+)", sprint.get("name", ""))
+        if match:
+            num = int(match.group(1))
+            if num > maior:
+                maior = num
     return maior
 
-def buscar_issues_pendentes(sprint_id):
-    """Busca issues não concluídas de uma sprint."""
-    resp = api_get(f"/sprint/{sprint_id}/issue?maxResults=200&fields=status")
-    if resp.status_code == 200:
-        issues = resp.json().get("issues", [])
-        pendentes = []
-        for issue in issues:
-            status_cat = issue["fields"]["status"]["statusCategory"]["key"]
-            if status_cat != "done":
-                pendentes.append(issue["key"])
-        return pendentes
-    return []
 
-def criar_sprint(nome, inicio, fim):
-    """Cria uma nova sprint (estado future)."""
-    data = {
+def criar_sprint(nome):
+    """Cria uma nova sprint no board (estado future)."""
+    url = f"{BASE_URL}/sprint"
+    payload = {
         "name": nome,
-        "startDate": inicio,
-        "endDate": fim,
         "originBoardId": int(BOARD_ID),
         "goal": "Sprint criada automaticamente"
     }
-    resp = api_post("/sprint", data)
+    resp = requests.post(url, auth=AUTH, headers=HEADERS, json=payload)
+
     if resp.status_code == 201:
-        sprint = resp.json()
-        print(f"   ✅ Sprint criada! ID: {sprint['id']}")
-        return sprint
+        sprint_id = resp.json()["id"]
+        log(f"✅ Sprint criada! Nome: {nome} | ID: {sprint_id}")
+        return sprint_id
     else:
-        print(f"   ❌ Erro ao criar sprint: {resp.status_code}")
-        print(f"      Resposta: {resp.text}")
+        log(f"❌ Erro ao criar sprint: {resp.status_code}")
+        log(f"   Resposta: {resp.text}")
         sys.exit(1)
 
-def mover_issues(sprint_id, issue_keys):
-    """Move issues para uma sprint."""
+
+def mover_issues(sprint_id_destino, issue_keys):
+    """Move issues para a sprint de destino."""
     if not issue_keys:
+        log("   Nenhuma issue para mover.")
         return True
-    data = {"issues": issue_keys}
-    resp = api_post(f"/sprint/{sprint_id}/issue", data)
+
+    url = f"{BASE_URL}/sprint/{sprint_id_destino}/issue"
+    payload = {"issues": issue_keys}
+    resp = requests.post(url, auth=AUTH, headers=HEADERS, json=payload)
+
     if resp.status_code in [200, 204]:
-        print(f"   ✅ {len(issue_keys)} issues movidas com sucesso")
+        log(f"✅ {len(issue_keys)} issues movidas para sprint {sprint_id_destino}")
         return True
     else:
-        print(f"   ⚠️ Erro ao mover issues: {resp.status_code}")
-        print(f"      Resposta: {resp.text}")
+        log(f"❌ Erro ao mover issues: {resp.status_code}")
+        log(f"   Resposta: {resp.text}")
         return False
+
 
 def fechar_sprint(sprint_id, sprint_name):
-    """Fecha uma sprint. Inclui name obrigatoriamente."""
-    data = {
+    """Fecha uma sprint."""
+    url = f"{BASE_URL}/sprint/{sprint_id}"
+    payload = {
         "name": sprint_name,
-        "state": "closed",
-        "completeDate": AGORA.strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
+        "state": "closed"
     }
-    resp = api_put(f"/sprint/{sprint_id}", data)
-    if resp.status_code == 200:
-        print(f"   ✅ Sprint fechada com sucesso")
-        return True
-    else:
-        print(f"   ❌ Erro ao fechar: {resp.status_code}")
-        print(f"      Resposta: {resp.text}")
-        # Tentativa alternativa sem completeDate
-        data2 = {"name": sprint_name, "state": "closed"}
-        resp2 = api_put(f"/sprint/{sprint_id}", data2)
-        if resp2.status_code == 200:
-            print(f"   ✅ Sprint fechada (segunda tentativa)")
-            return True
-        else:
-            print(f"   ❌ Falha definitiva ao fechar: {resp2.status_code}")
-            print(f"      Resposta: {resp2.text}")
-            return False
+    resp = requests.put(url, auth=AUTH, headers=HEADERS, json=payload)
 
-def ativar_sprint(sprint_id, sprint_name, inicio, fim):
-    """Ativa uma sprint. Inclui name obrigatoriamente."""
-    data = {
-        "name": sprint_name,
-        "state": "active",
-        "startDate": inicio,
-        "endDate": fim
-    }
-    resp = api_put(f"/sprint/{sprint_id}", data)
     if resp.status_code == 200:
-        print(f"   ✅ Sprint ativada com sucesso")
+        log(f"✅ Sprint fechada: {sprint_name}")
         return True
     else:
-        print(f"   ❌ Erro ao ativar: {resp.status_code}")
-        print(f"      Resposta: {resp.text}")
+        log(f"❌ Erro ao fechar sprint: {resp.status_code}")
+        log(f"   Resposta: {resp.text}")
         return False
 
-# ============ EXECUÇÃO PRINCIPAL ============
+
+def ativar_sprint(sprint_id, sprint_name, data_inicio, data_fim):
+    """Ativa uma sprint com datas."""
+    url = f"{BASE_URL}/sprint/{sprint_id}"
+    payload = {
+        "name": sprint_name,
+        "state": "active",
+        "startDate": data_inicio,
+        "endDate": data_fim
+    }
+    resp = requests.put(url, auth=AUTH, headers=HEADERS, json=payload)
+
+    if resp.status_code == 200:
+        log(f"✅ Sprint ativada: {sprint_name}")
+        return True
+    else:
+        log(f"❌ Erro ao ativar sprint: {resp.status_code}")
+        log(f"   Resposta: {resp.text}")
+        return False
+
 
 def main():
-    print("=" * 55)
-    print("🚀 AUTOMAÇÃO DE SPRINT SEMANAL")
-    print("=" * 55)
-    print()
-    print(f"📅 Data atual (São Paulo): {AGORA.strftime('%d/%m/%Y %H:%M')}")
-    print(f"📋 Board ID: {BOARD_ID}")
-    print(f"⏱️ Duração da sprint: {DURACAO_DIAS} dias")
-    print()
+    log("=" * 50)
+    log("🚀 AUTOMAÇÃO DE SPRINT SEMANAL - GRAZZIOTIN")
+    log("=" * 50)
+
+    validar_config()
+
+    # Data atual no fuso de São Paulo
+    agora = datetime.now(FUSO_HORARIO)
+    hoje_str = agora.strftime("%Y-%m-%d")
+    log(f"📅 Data atual: {agora.strftime('%d/%m/%Y %H:%M')} (America/Sao_Paulo)")
+
+    # Buscar sprints
+    sprints_ativas = get_sprints("active")
+    sprints_fechadas = get_sprints("closed")
+    sprints_futuras = get_sprints("future")
+
+    todas_sprints = sprints_ativas + sprints_fechadas + sprints_futuras
+
+    # Calcular próximo número
+    maior_numero = extrair_maior_numero(todas_sprints)
+    proximo_numero = maior_numero + 1
+    mes_atual = agora.strftime("%m")
+    ano_atual = agora.strftime("%Y")
+    nome_nova_sprint = f"Sprint {proximo_numero} - {mes_atual}/{ano_atual}"
+
+    log(f"📊 Maior número encontrado: {maior_numero}")
+    log(f"📝 Próxima sprint: {nome_nova_sprint}")
 
     # Datas da nova sprint
-    data_inicio = HOJE.strftime("%Y-%m-%d")
-    data_fim = (HOJE + timedelta(days=DURACAO_DIAS)).strftime("%Y-%m-%d")
+    data_inicio = agora.strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
+    data_fim_dt = agora + timedelta(days=DURACAO_SPRINT_DIAS)
+    data_fim = data_fim_dt.strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
 
-    # Buscar sprint ativa
-    print("🔍 Buscando sprints ativas...")
-    sprints_ativas = buscar_sprints(BOARD_ID, "active")
-
+    # ========== CENÁRIO 1: Existe sprint ativa vencida ==========
     if sprints_ativas:
-        sprint_atual = sprints_ativas[0]
-        sprint_id = sprint_atual["id"]
-        sprint_nome = sprint_atual["name"]
-        end_date_str = sprint_atual.get("endDate", "")
+        sprint_ativa = sprints_ativas[0]
+        end_date_str = sprint_ativa.get("endDate", "")
 
-        print(f"   📌 Sprint ativa: {sprint_nome} (ID: {sprint_id})")
-
-        # Verificar se venceu
         if end_date_str:
-            end_date = datetime.fromisoformat(end_date_str.replace("Z", "+00:00")).date()
-            print(f"   📆 Vence em: {end_date.strftime('%d/%m/%Y')}")
+            # Pega só a parte da data (YYYY-MM-DD)
+            end_date = datetime.strptime(end_date_str[:10], "%Y-%m-%d").date()
+            hoje_date = agora.date()
 
-            if end_date <= HOJE:
-                print(f"   ⚠️ Sprint VENCIDA! Processando...")
-                print()
+            log(f"\n🔍 Sprint ativa: {sprint_ativa['name']} (ID: {sprint_ativa['id']})")
+            log(f"   Vence em: {end_date.strftime('%d/%m/%Y')}")
+            log(f"   Hoje: {hoje_date.strftime('%d/%m/%Y')}")
 
-                # Buscar issues pendentes
-                issues_pendentes = buscar_issues_pendentes(sprint_id)
-                print(f"   📝 Issues pendentes: {len(issues_pendentes)}")
+            if end_date <= hoje_date:
+                log(f"\n⚠️ Sprint vencida! Iniciando rotação...")
 
-                # Calcular próximo número
-                maior_num = buscar_maior_numero_sprint()
-                proximo_num = maior_num + 1
-                mes_ano = f"{HOJE.month:02d}/{HOJE.year}"
-                novo_nome = f"Sprint {proximo_num} - {mes_ano}"
+                # 1. Buscar issues pendentes
+                issues_pendentes = get_issues_pendentes(sprint_ativa["id"])
+                log(f"   Issues pendentes: {len(issues_pendentes)}")
 
-                print()
-                print(f"📦 Criando: {novo_nome}")
-                print(f"   Início: {data_inicio} | Fim: {data_fim}")
+                # 2. Criar nova sprint
+                nova_sprint_id = criar_sprint(nome_nova_sprint)
 
-                # Criar nova sprint
-                nova_sprint = criar_sprint(novo_nome, data_inicio, data_fim)
-                nova_sprint_id = nova_sprint["id"]
-
-                # Mover issues pendentes
+                # 3. Mover issues
                 if issues_pendentes:
-                    print()
-                    print(f"🔄 Movendo {len(issues_pendentes)} issues para {novo_nome}...")
                     mover_issues(nova_sprint_id, issues_pendentes)
 
-                # Fechar sprint antiga
-                print()
-                print(f"🔒 Fechando {sprint_nome}...")
-                fechar_sprint(sprint_id, sprint_nome)
+                # 4. Fechar sprint antiga
+                fechar_sprint(sprint_ativa["id"], sprint_ativa["name"])
 
-                # Ativar nova sprint
-                print()
-                print(f"▶️ Ativando {novo_nome}...")
-                ativar_sprint(nova_sprint_id, novo_nome, data_inicio, data_fim)
+                # 5. Ativar nova sprint
+                ativar_sprint(nova_sprint_id, nome_nova_sprint, data_inicio, data_fim)
 
+                log(f"\n🎉 AUTOMAÇÃO CONCLUÍDA COM SUCESSO!")
+                log(f"   Sprint fechada: {sprint_ativa['name']}")
+                log(f"   Sprint ativa: {nome_nova_sprint}")
             else:
-                print(f"   ✅ Sprint ainda vigente. Nada a fazer.")
-                print(f"   Próxima execução relevante após {end_date.strftime('%d/%m/%Y')}")
-        else:
-            print("   ⚠️ Sprint sem data de fim definida. Pulando.")
-    else:
-        print("   ℹ️ Nenhuma sprint ativa encontrada.")
-        print("   Criando nova sprint do zero...")
-        print()
+                dias_restantes = (end_date - hoje_date).days
+                log(f"\n✅ Sprint ainda vigente. Faltam {dias_restantes} dia(s).")
+                log("   Nenhuma ação necessária.")
 
-        # Calcular próximo número
-        maior_num = buscar_maior_numero_sprint()
-        proximo_num = maior_num + 1
-        mes_ano = f"{HOJE.month:02d}/{HOJE.year}"
-        novo_nome = f"Sprint {proximo_num} - {mes_ano}"
+        return
 
-        print(f"📦 Criando: {novo_nome}")
-        print(f"   Início: {data_inicio} | Fim: {data_fim}")
+    # ========== CENÁRIO 2: Não existe sprint ativa ==========
+    log("\n⚠️ Nenhuma sprint ativa encontrada. Criando nova...")
 
-        # Criar
-        nova_sprint = criar_sprint(novo_nome, data_inicio, data_fim)
-        nova_sprint_id = nova_sprint["id"]
+    nova_sprint_id = criar_sprint(nome_nova_sprint)
+    ativar_sprint(nova_sprint_id, nome_nova_sprint, data_inicio, data_fim)
 
-        # Ativar
-        print()
-        print(f"▶️ Ativando {novo_nome}...")
-        ativar_sprint(nova_sprint_id, novo_nome, data_inicio, data_fim)
+    log(f"\n🎉 AUTOMAÇÃO CONCLUÍDA COM SUCESSO!")
+    log(f"   Sprint ativa: {nome_nova_sprint}")
 
-    print()
-    print("=" * 55)
-    print("✅ AUTOMAÇÃO CONCLUÍDA")
-    print("=" * 55)
 
 if __name__ == "__main__":
     main()
