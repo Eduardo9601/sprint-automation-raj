@@ -1,0 +1,115 @@
+name: Teste Completo (Teams + Relatório)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  testar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Testar notificação e relatório
+        env:
+          JIRA_DOMAIN: ${{ secrets.JIRA_DOMAIN }}
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          pip install requests
+          python -c "
+          import requests, json, os
+          from datetime import datetime
+
+          domain = os.environ['JIRA_DOMAIN']
+          webhook = os.environ.get('TEAMS_WEBHOOK_URL', '')
+          agora = datetime.now().strftime('%d/%m/%Y às %H:%M')
+
+          # Dados simulados
+          sprint_fechada = 'Sprint 49 - 07/2026'
+          sprint_nova = 'Sprint 50 - 07/2026'
+          concluidas = [
+              {'key': 'RAJ-101', 'summary': 'Tarefa exemplo 1 (teste)'},
+              {'key': 'RAJ-105', 'summary': 'Tarefa exemplo 2 (teste)'}
+          ]
+          movidas = [
+              {'key': 'RAJ-102', 'summary': 'Tarefa exemplo 3 (teste)'},
+              {'key': 'RAJ-110', 'summary': 'Tarefa exemplo 4 (teste)'},
+              {'key': 'RAJ-112', 'summary': 'Tarefa exemplo 5 (teste)'}
+          ]
+
+          total = len(concluidas) + len(movidas)
+          percentual = int((len(concluidas) / total) * 100) if total > 0 else 0
+
+          # --- CARD TEAMS ---
+          if webhook:
+              lista_concluidas = chr(10).join([f'- ✅ [{i[\"key\"]}](https://{domain}/browse/{i[\"key\"]}) — {i[\"summary\"]}' for i in concluidas])
+              lista_movidas = chr(10).join([f'- 🔄 [{i[\"key\"]}](https://{domain}/browse/{i[\"key\"]}) — {i[\"summary\"]}' for i in movidas])
+
+              card = {
+                  'type': 'message',
+                  'attachments': [{
+                      'contentType': 'application/vnd.microsoft.card.adaptive',
+                      'contentUrl': None,
+                      'content': {
+                          'type': 'AdaptiveCard',
+                          '\$schema': 'http://adaptivecards.io/schemas/adaptive-card.json',
+                          'version': '1.4',
+                          'body': [
+                              {'type': 'TextBlock', 'text': f'🏁 Sprint Concluída: {sprint_fechada}', 'weight': 'Bolder', 'size': 'Large'},
+                              {'type': 'TextBlock', 'text': f'📅 {agora} | 📊 {percentual}% concluído ({len(concluidas)} de {total})', 'spacing': 'None'},
+                              {'type': 'TextBlock', 'text': f'✅ **Tarefas Finalizadas ({len(concluidas)}):**', 'weight': 'Bolder', 'spacing': 'Large'},
+                              {'type': 'TextBlock', 'text': lista_concluidas, 'wrap': True},
+                              {'type': 'TextBlock', 'text': f'🔄 **Transferidas → {sprint_nova} ({len(movidas)}):**', 'weight': 'Bolder', 'spacing': 'Large'},
+                              {'type': 'TextBlock', 'text': lista_movidas, 'wrap': True},
+                              {'type': 'TextBlock', 'text': f'📊 {len(concluidas)} concluídas | {len(movidas)} transferidas | {percentual}% de conclusão', 'spacing': 'Large', 'separator': True}
+                          ],
+                          'actions': [
+                              {'type': 'Action.OpenUrl', 'title': '📋 Ver Board no Jira', 'url': f'https://{domain}/jira/software/c/projects/RAJ/boards/89'}
+                          ]
+                      }
+                  }]
+              }
+
+              resp = requests.post(webhook, json=card)
+              print(f'Teams: {resp.status_code}')
+          else:
+              print('TEAMS_WEBHOOK_URL não configurado, pulando...')
+
+          # --- RELATÓRIO MD ---
+          os.makedirs('relatorios', exist_ok=True)
+          relatorio = f'''# 📋 Relatório Sprint - {sprint_fechada} (TESTE)
+
+          > ⚠️ Este é um relatório de TESTE — nenhuma sprint foi realmente fechada.
+
+          ## 📅 Informações
+          | Campo | Valor |
+          |-------|-------|
+          | Sprint Concluída | {sprint_fechada} |
+          | Nova Sprint | {sprint_nova} |
+          | Data | {agora} |
+          | Conclusão | {percentual}% ({len(concluidas)} de {total}) |
+
+          ## ✅ Tarefas Finalizadas ({len(concluidas)})
+          | Chave | Descrição | Link |
+          |-------|-----------|------|
+          ''' + chr(10).join([f'| {i[\"key\"]} | {i[\"summary\"]} | [Abrir](https://{domain}/browse/{i[\"key\"]}) |' for i in concluidas]) + f'''
+
+          ## 🔄 Transferidas para {sprint_nova} ({len(movidas)})
+          | Chave | Descrição | Link |
+          |-------|-----------|------|
+          ''' + chr(10).join([f'| {i[\"key\"]} | {i[\"summary\"]} | [Abrir](https://{domain}/browse/{i[\"key\"]}) |' for i in movidas])
+
+          with open('relatorios/TESTE_sprint_report.md', 'w') as f:
+              f.write(relatorio)
+          print('Relatório salvo em relatorios/TESTE_sprint_report.md')
+          "
+
+      - name: Commit relatório de teste
+        run: |
+          git config user.name "Sprint Bot"
+          git config user.email "bot@grazziotin.com"
+          git add relatorios/
+          git diff --staged --quiet || git commit -m "📋 [TESTE] Relatório de sprint simulado"
+          git push
