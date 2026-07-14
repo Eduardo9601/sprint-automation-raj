@@ -2,13 +2,14 @@ name: Sprint Semanal - RAJ
 
 on:
   schedule:
-    - cron: '0 11 * * 1'  # Segunda-feira 08:00 São Paulo (UTC-3 = 11:00 UTC)
-  workflow_dispatch:  # Permite rodar manualmente
+    # Toda segunda-feira às 08:00 (horário de Brasília = 11:00 UTC)
+    - cron: '0 11 * * 1'
+  workflow_dispatch:
+    # Permite rodar manualmente pelo botão "Run workflow"
 
 jobs:
   criar-sprint:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout do repositório
         uses: actions/checkout@v4
@@ -21,11 +22,11 @@ jobs:
       - name: Instalar dependências
         run: pip install requests
 
-      - name: Executar automação de sprint
-        run: python sprint_automation.py
+      - name: Executar automação
         env:
           JIRA_DOMAIN: ${{ secrets.JIRA_DOMAIN }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           BOARD_ID: ${{ secrets.BOARD_ID }}
-          DURACAO_SPRINT_DIAS: 7
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: python sprint_automation.py
