@@ -1,0 +1,16 @@
+name: Teste Webhook Teams
+
+on:
+  workflow_dispatch:
+
+jobs:
+  testar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enviar mensagem teste
+        env:
+          TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        run: |
+          curl -H "Content-Type: application/json" \
+            -d '{"text": "✅ Teste de webhook - Sprint Bot funcionando!"}' \
+            "$TEAMS_WEBHOOK_URL"
