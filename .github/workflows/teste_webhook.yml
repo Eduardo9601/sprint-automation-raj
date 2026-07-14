@@ -12,5 +12,26 @@ jobs:
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
         run: |
           curl -H "Content-Type: application/json" \
-            -d '{"text": "✅ Teste de webhook - Sprint Bot funcionando!"}' \
+            -d '{
+              "type": "message",
+              "attachments": [
+                {
+                  "contentType": "application/vnd.microsoft.card.adaptive",
+                  "contentUrl": null,
+                  "content": {
+                    "type": "AdaptiveCard",
+                    "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                    "version": "1.4",
+                    "body": [
+                      {
+                        "type": "TextBlock",
+                        "text": "✅ Teste de webhook - Sprint Bot funcionando!",
+                        "weight": "Bolder",
+                        "size": "Medium"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }' \
             "$TEAMS_WEBHOOK_URL"
