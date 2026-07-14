@@ -2,12 +2,15 @@ name: Sprint Semanal - RAJ
 
 on:
   schedule:
-    - cron: '0 12 * * 1'  # Toda segunda-feira às 09:00 (horário de Brasília = UTC-3)
-  workflow_dispatch:  # Permite rodar manualmente
+    # Roda toda segunda-feira às 09:00 (horário de Brasília = 12:00 UTC)
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
 
 jobs:
-  sprint-automation:
+  rotacionar-sprint:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout do repositório
@@ -28,6 +31,6 @@ jobs:
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           BOARD_ID: ${{ secrets.BOARD_ID }}
           TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
-          CONFLUENCE_SPACE_KEY: ${{ secrets.CONFLUENCE_SPACE_KEY }}
-          CONFLUENCE_PARENT_PAGE_ID: ${{ secrets.CONFLUENCE_PARENT_PAGE_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: python sprint_automation.py
